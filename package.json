@@ -1,0 +1,29 @@
+{
+  "name": "telit-modem",
+  "version": "1.0.0-beta.0",
+  "description": "Telit Modem interface for serial ports (with focus on HE910-D and similiar series)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smart-home-technology/telit-modem.git"
+  },
+  "keywords": [
+    "telit",
+    "modem"
+  ],
+  "author": "Philip Tschiemer",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/smart-home-technology/telit-modem/issues"
+  },
+  "homepage": "https://github.com/smart-home-technology/telit-modem#readme",
+  "dependencies": {
+    "at-commander": "latest",
+    "promise": "latest",
+    "http": "latest",
+    "mqtt": "latest"
+  }
+}
