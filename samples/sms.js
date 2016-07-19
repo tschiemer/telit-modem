@@ -12,7 +12,7 @@ modem.open('COM4').catch((err) => {
     console.log("Opened serial port");
 
     process.on('SIGINT', function () {
-        modem.disablePDP();
+        modem.unsubscribeFromNetworkRegistrationState();
         modem.close();
         process.exit(0);
     });
