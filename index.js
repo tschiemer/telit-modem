@@ -2,12 +2,13 @@
 
 var ATCommander = require('at-commander');
 var Promise = require('promise');
+var PDU = require('pdu');
 var stream = require('stream'),
     http = require('http'),
     mqtt = require('mqtt'),
     url = require('url');
 
-var Command = ATCommander.Command;
+// var Command = ATCommander.Command;
 
 const PROTOCOL_TCP = 0;
 const PROTOCOL_UDP = 1;
@@ -15,6 +16,15 @@ const PROTOCOL_UDP = 1;
 exports.Protocols = {
     TCP: PROTOCOL_TCP,
     UDP: PROTOCOL_UDP
+};
+
+exports.NetworkRegistrationStates = {
+    NotRegisteredNotSearching: 0,
+    RegisteredHome: 1,
+    NotRegisteredButSearching: 2,
+    RegistrationDenied: 3,
+    Unknown: 4,
+    RegisteredRoaming: 5
 };
 
 
@@ -70,13 +80,15 @@ class TelitModem extends ATCommander.Modem
     /**
      * Test function to show how to get simple attributes
      */
-    getModel(){
+    getModel()
+    {
         return new Promise((resolve, reject) => {
             this.addCommand("AT+GMM",/^\r\n(.+)\r\n\r\nOK\r\n/).then(function(matches){
                 resolve(matches[1]);
             }).catch(reject);
         });
     }
+
 
     setAPN(APN, type)
     {
@@ -98,6 +110,69 @@ class TelitModem extends ATCommander.Modem
         params.push(APN);
 
         return this.addCommand("AT#CGDCONT=",params.join(","));
+    }
+
+    getNetworkRegistrationState()
+    {
+        return new Promise((resolve, reject) => {
+            this.addCommand("AT+CREG?", /^\r\n\+CREG: (\d+),(\d+)\r\nOK\r\n/).then((matches) => {
+                resolve(parseInt(matches[1]), parseInt(matches[2]));
+            }).catch(reject);
+        });
+    }
+
+    subscribeToNetworkRegistrationState(callback)
+    {
+        this.addNotification("networkRegistrationState", /^\r\n\+CREG: (\d+)\r\n/, (buf, matches) => {
+            callback(parseInt(matches[1]));
+        });
+        this.addCommand("AT+CREG=1");
+    }
+
+    unsubscribeFromNetworkRegistrationState()
+    {
+        this.addCommand("AT+CREG=0").then((success) => {
+            this.removeNotification("networkRegistrationState");
+        });
+    }
+
+    enableSMS(receiveCallback)
+    {
+        // AT+CMGF=<mode> (0: PDU, 1: text)
+        this.addCommand("AT+CMGF=0");
+
+        //AT+CNMI=[<mode>[,<mt>[,<bm>[,<ds> [,<bfr>]]]]]
+        // flush sms directly to modem
+        this.addCommand("AT+CNMI=2,2");
+
+        //+CMT: <alpha>,<length><CR><LF><pdu>
+        this.addNotification('receivedSMS', /^\r\n\+CMT: "(.*)",(\d+)\r\n(.+)\r\n/, (buf, matches) => {
+            console.log(matches);
+            receiveCallback(PDU.parse(matches[3]),matches[1], matches[2]);
+        });
+
+        console.log("enableSMS");
+    }
+
+    disableSMS()
+    {
+        this.removeNotification('receivedSMS');
+    }
+
+
+    getServiceCenterAddress()
+    {
+        return new Promise((resolve, reject) => {
+                this.addCommand("AT+CMGF?", /^\r\n\+CSCA: (.+),(.+)\r\n/).then((buf, matches) => {
+                    resolve(matches[1], matches[2]);
+            }).catch(reject);
+        });
+    }
+
+    setServiceCenterAddress(number, type)
+    {
+        var str = "AT+CMGF=" + number + (typeof type === 'undefined' ? '' : ',' + type);
+        return this.addcommand(str);
     }
 
     enablePDP(contextId)
@@ -156,6 +231,14 @@ class TelitModem extends ATCommander.Modem
     }
 
 }
+
+// class ExtCommand extends ATCommander.Command
+// {
+//     constructor(cmd, expected, resultHandler, processor)
+//     {
+//
+//     }
+// }
 
 class Socket extends stream.Duplex
 {
@@ -218,7 +301,7 @@ class Socket extends stream.Duplex
         var conMode = 1;     // command mode connection
 
         var cmd = "AT#SD=" + this._connId + "," + this.protocol + "," + this.port + "," + this.host + "," + closureMode + "," + this.port + "," + conMode;
-        var command = new Command(cmd, "OK");
+        var command = new ATCommander.Command(cmd, "OK");
 
         if (typeof connectListener !== 'function'){
             connectListener = function(){};
