@@ -257,10 +257,10 @@ class Socket extends stream.Duplex
 
 
         // AT#SCFGEXT=<connId>,<ringMode>,<recvDataMode>,<keepalive>,[,<ListenAutoRsp>[,<sendDataMode>]]
-        // set socket sring format to SRING: <connId>,<datalen>
+        // set socket sring format to SRING: <connId>,<datalen>,<data>
         // receive in hex mode
         // keepalive deactivated
-        this._modem.addCommand("AT#SCFGEXT="+this._connId+",1,1,0");
+        this._modem.addCommand("AT#SCFGEXT="+this._connId+",2,1,0");
 
         // AT#SCFGEXT2=<connId>,<bufferStart>,[,<abortConnAttempt>[,<unused_B >[,<unused_C >[,<noCarrierMode>]]]]
         // buffer timeout reset on new data received
@@ -324,15 +324,19 @@ class Socket extends stream.Duplex
     _registerListeners()
     {
 
-        // register receive handler
-        this._modem.addNotification('socketRing-'+this._connId, new RegExp("^\r\nSRING: "+this._connId+",(.+)\r\n"), (buf,matches) => {
-
-            // console.log("SRING => got " + matches[1] + " bytes");
-            //#SRECV: <sourceIP>,<sourcePort><connId>,<recData>,<dataLeft>
-            this._modem.addCommand("AT#SRECV="+this._connId+","+matches[1], new RegExp("^\r\n#SRECV: "+this._connId+",(\\d+)\r\n(.+)\r\n\r\nOK\r\n")).then((result) => {
-            // console.log("srecv");
-                this._push(new Buffer(result[2],"hex"));
-            }).catch((err) => console.log("error",err));
+        // // register receive handler
+        // this._modem.addNotification('socketRing-'+this._connId, new RegExp("^\r\nSRING: "+this._connId+",(.+)\r\n"), (buf,matches) => {
+        //
+        //     // console.log("SRING => got " + matches[1] + " bytes");
+        //     //#SRECV: <sourceIP>,<sourcePort><connId>,<recData>,<dataLeft>
+        //     this._modem.addCommand("AT#SRECV="+this._connId+","+matches[1], new RegExp("^\r\n#SRECV: "+this._connId+",(\\d+)\r\n(.+)\r\n\r\nOK\r\n")).then((result) => {
+        //     // console.log("srecv");
+        //         this._push(new Buffer(result[2],"hex"));
+        //     }).catch((err) => console.log("error",err));
+        // });
+         // register receive handler
+        this._modem.addNotification('socketRing-'+this._connId, new RegExp("^\r\nSRING: "+this._connId+",(.+),(.+)\r\n"), (buf,matches) => {
+            this._push(new Buffer(matches[2],"hex"));
         });
 
         // add socket closed notification  NO CARRIER: <connId>,<cause>
