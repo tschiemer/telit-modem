@@ -13,8 +13,9 @@ modem.open('COM4').catch((err) => {
 
     process.on('SIGINT', function () {
         modem.unsubscribeFromNetworkRegistrationState();
-        modem.close();
-        process.exit(0);
+        modem.closeGracefully(function(){
+            process.exit(0);
+        });
     });
 
 

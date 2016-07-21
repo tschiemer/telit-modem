@@ -198,7 +198,7 @@ class TelitModem extends ATCommander.Modem
             contextId = 1;
         }
         return new Promise((resolve, reject) => {
-            this.addCommand("AT#SGACT=" + contextId + ",1", /#SGACT: (.+)\r\n\r\nOK\r\n/).then((matches) => {
+            this.addCommand("AT#SGACT=" + contextId + ",1", /#SGACT: (.+)\r\n\r\nOK\r\n/, {timeout: 5000}).then((matches) => {
                 this.ip = matches[1];
                 resolve(matches[1]);
             }).catch(reject);
@@ -320,7 +320,7 @@ class Socket extends stream.Duplex
         var conMode = 1;     // command mode connection
 
         var cmd = "AT#SD=" + this._connId + "," + this.protocol + "," + this.port + ",\"" + this.host + "\"," + closureMode + "," + this.port + "," + conMode;
-        var command = new ATCommander.Command(cmd, "OK");
+        var command = new ATCommander.Command(cmd, "OK", {timeout: 5000});
 
         if (typeof connectListener !== 'function'){
             connectListener = function(){};

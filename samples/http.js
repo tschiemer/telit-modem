@@ -8,8 +8,9 @@ modem.open('COM4').catch((err) => {
 
     process.on('SIGINT',function(){
         modem.disablePDP();
-        modem.close();
-        process.exit(0);
+        modem.closeGracefully(function(){
+            process.exit(0);
+        });
     });
 
 

@@ -2,9 +2,9 @@
 
 Telit Modem interface for serial ports (with focus on HE910-D and similiar series) NodeJS
 
-Beta Beta Beta
+__Please note that this is still a beta version__
 
-This is both a development package and a demo showcase for the `at-commander` npm module.
+This module is also a showcase for how you can customize the generic [ATCommander.Modem](https://www.npmjs.com/package/at-commander) for your specific devices.
 
 
 ## Examples
@@ -23,9 +23,10 @@ This is both a development package and a demo showcase for the `at-commander` np
         console.log("Opened serial port");
 
         process.on('SIGINT', function () {
-            modem.disablePDP();
-            modem.close();
-            process.exit(0);
+            modem.unsubscribeFromNetworkRegistrationState();
+            modem.closeGracefully(function(){
+                process.exit(0);
+            });
         });
 
 
@@ -89,8 +90,9 @@ This is both a development package and a demo showcase for the `at-commander` np
 
         process.on('SIGINT', function () {
             modem.disablePDP();
-            modem.close();
-            process.exit(0);
+            modem.closeGracefully(function(){
+                process.exit(0);
+            });
         });
 
 
@@ -144,8 +146,9 @@ This is both a development package and a demo showcase for the `at-commander` np
 
         process.on('SIGINT',function(){
             modem.disablePDP();
-            modem.close();
-            process.exit(0);
+            modem.closeGracefully(function(){
+                process.exit(0);
+            });
         });
 
 
