@@ -53,7 +53,7 @@ class TelitModem extends ATCommander.Modem
             console.log("Received error: ", matches);
         });
         this.addNotification('closedSocket', /^NO CARRIER\r\n/, (matches) => {
-            console.log("CHECKING CONS", this.inbuf, this.inbuf.toString() );
+            // console.log("CHECKING CONS", this.inbuf, this.inbuf.toString() );
             for(var i in this._sockets){
                 this._sockets[i]._checkConnection();
             }
@@ -82,9 +82,9 @@ class TelitModem extends ATCommander.Modem
         for (var i in this._sockets){
             l++;
             if (l == this._sockets.length){
-                this._sockets[i].close(() => {
+                this._sockets[i].destroy(() => {
                     super.close(cb);
-            })
+                });
             } else {
                 this._sockets[i].close();
             }
@@ -268,6 +268,7 @@ class Socket extends stream.Duplex
 
         // this.writable = false;
         this._connected = false;
+        this._closing = false;
 
         this._pushPossible = false;
         this._recvBuf = new Buffer(0);
@@ -377,13 +378,18 @@ class Socket extends stream.Duplex
             disconnectListener = function(){};
         }
 
-        if (!this._connected){
-            disconnectListener();
+        // this.closing = true
+
+        // console.log("close()", this._connected);
+        if (this._connected){
+            this._disconnected();
+
+            this._modem.addCommand("AT#SH=" + this._connId, "OK").then((result) => {
+                disconnectListener();
+            }).catch(disconnectListener);
             //throw new Error("Already disconnected");
         } else {
-            this._modem.addCommand("AT#SH=" + this._connId, "OK").then((result) => {
-                this._disconnected(disconnectListener);
-            }).catch(disconnectListener);
+            disconnectListener();
         }
     }
 
@@ -401,7 +407,7 @@ class Socket extends stream.Duplex
                 case exports.SocketStates.Closed:
                     // console.log("Detected socket close");
                     this._disconnected();
-                    this.destroy();
+                    // this.destroy();
                     break;
             }
         });
