@@ -51,13 +51,13 @@ class TelitModem extends ATCommander.Modem
 
         this.addNotification('cmsError',/^\r\n\+CMS ERROR:(.+)\r\n/, (matches) => {
             console.log("Received error: ", matches);
-    });
+        });
         this.addNotification('closedSocket', /NO CARRIER\r\n/, (matches) => {
             console.log("CHECKING CONS");
-        for(var i in this._sockets){
-            this._sockets[i]._checkConnection();
-        }
-    });
+            for(var i in this._sockets){
+                this._sockets[i]._checkConnection();
+            }
+        });
 
         this.startProcessing();
 
@@ -68,11 +68,11 @@ class TelitModem extends ATCommander.Modem
         var promise = super.open(path);
 
         return new Promise((resolve, reject) => {
-                promise.then(()=>{
+            promise.then(()=>{
                 // upon open, make sure to disable echo
                 this.run("ATE0",/^((ATE0\r\n)?)\r\nOK\r\n/).then(resolve).catch(reject);
-    }).catch(reject);
-    });
+            }).catch(reject);
+        });
     }
 
     close(cb)
@@ -100,10 +100,10 @@ class TelitModem extends ATCommander.Modem
     getModel()
     {
         return new Promise((resolve, reject) => {
-                this.addCommand("AT+GMM",/^\r\n(.+)\r\n\r\nOK\r\n/).then(function(matches){
+            this.addCommand("AT+GMM",/^\r\n(.+)\r\n\r\nOK\r\n/).then(function(matches){
                 resolve(matches[1]);
             }).catch(reject);
-    });
+        });
     }
 
 
@@ -133,16 +133,16 @@ class TelitModem extends ATCommander.Modem
     {
         return new Promise((resolve, reject) => {
             this.addCommand("AT+CREG?", /^\r\n\+CREG: (\d+),(\d+)\r\nOK\r\n/).then((matches) => {
-            resolve(parseInt(matches[1]), parseInt(matches[2]));
-    }).catch(reject);
-    });
+                resolve(parseInt(matches[1]), parseInt(matches[2]));
+            }).catch(reject);
+        });
     }
 
     subscribeToNetworkRegistrationState(callback)
     {
         this.addNotification("networkRegistrationState", /^\r\n\+CREG: (\d+)\r\n/, (buf, matches) => {
             callback(parseInt(matches[1]));
-    });
+        });
         this.addCommand("AT+CREG=1");
     }
 
@@ -150,7 +150,7 @@ class TelitModem extends ATCommander.Modem
     {
         this.addCommand("AT+CREG=0").then((success) => {
             this.removeNotification("networkRegistrationState");
-    });
+        });
     }
 
     enableSMS(receiveCallback)
@@ -165,8 +165,8 @@ class TelitModem extends ATCommander.Modem
         //+CMT: <alpha>,<length><CR><LF><pdu>
         this.addNotification('receivedSMS', /^\r\n\+CMT: "(.*)",(\d+)\r\n(.+)\r\n/, (buf, matches) => {
             console.log(matches);
-        receiveCallback(PDU.parse(matches[3]),matches[1], matches[2]);
-    });
+            receiveCallback(PDU.parse(matches[3]),matches[1], matches[2]);
+        });
 
         console.log("enableSMS");
     }
@@ -181,9 +181,9 @@ class TelitModem extends ATCommander.Modem
     {
         return new Promise((resolve, reject) => {
                 this.addCommand("AT+CMGF?", /^\r\n\+CSCA: (.+),(.+)\r\n/).then((buf, matches) => {
-                resolve(matches[1], matches[2]);
-    }).catch(reject);
-    });
+                    resolve(matches[1], matches[2]);
+            }).catch(reject);
+        });
     }
 
     setServiceCenterAddress(number, type)
@@ -199,10 +199,10 @@ class TelitModem extends ATCommander.Modem
         }
         return new Promise((resolve, reject) => {
             this.addCommand("AT#SGACT=" + contextId + ",1", /\r\n#SGACT: (.+)\r\n\r\nOK\r\n/).then((matches) => {
-            this.ip = matches[1];
-        resolve(matches[1]);
-    }).catch(reject);
-    });
+                this.ip = matches[1];
+                resolve(matches[1]);
+            }).catch(reject);
+        });
     }
 
     disablePDP(contextId)
@@ -238,8 +238,8 @@ class TelitModem extends ATCommander.Modem
     mqtt(config)
     {
         return new mqtt.Client(() => {
-                return this.getSocket().connect(config);
-    }, config);
+            return this.getSocket().connect(config);
+        }, config);
     }
 
     _freeSocket(socket)
@@ -333,8 +333,8 @@ class Socket extends stream.Duplex
                 connectListener();
             } else {
                 connectListener(command);
-    }
-    }).catch(connectListener);
+            }
+        }).catch(connectListener);
 
         return this;
     }
@@ -352,15 +352,15 @@ class Socket extends stream.Duplex
         //         this._push(new Buffer(result[2],"hex"));
         //     }).catch((err) => console.log("error",err));
         // });
-        // register receive handler
+         // register receive handler
         this._modem.addNotification('socketRing-'+this._connId, new RegExp("^\r\nSRING: "+this._connId+",(.+),(.+)\r\n"), (buf,matches) => {
             this._push(new Buffer(matches[2],"hex"));
-    });
+        });
 
         // add socket closed notification  NO CARRIER: <connId>,<cause>
         this._modem.addNotification('socketClose-'+this._connId, new RegExp("^\r\nNO CARRIER: "+this._connId+",(.+)\r\n"), (result) => {
             this._disconnect();
-    });
+        });
     }
 
     _unregisterListeners()
@@ -381,9 +381,9 @@ class Socket extends stream.Duplex
             disconnectListener();
             //throw new Error("Already disconnected");
         } else {
-            this._modem.addCommand("AT#SH=" + this._connId, "OK", disconnectListener).then((result) => {
+            this._modem.addCommand("AT#SH=" + this._connId, "OK").then((result) => {
                 this._disconnected(disconnectListener);
-        }).catch(disconnectListener);
+            }).catch(disconnectListener);
         }
     }
 
@@ -391,19 +391,20 @@ class Socket extends stream.Duplex
     {
         if (!this._connected){
             //
+            return;
         }
 
         console.log("Checking for socket state");
         this._modem.addCommand("AT#SS=" + this._connId, /^\r\n#SS: (\d+),(\d+)\r\n\r\nOK\r\n/).then((matches) => {
             console.log("state",matches);
-        switch(parseInt(matches[2])){
-            case exports.SocketStates.Closed:
-                console.log("Detected socket close");
-                this._disconnected();
-                this.destroy();
-                break;
-        }
-    });
+            switch(parseInt(matches[2])){
+                case exports.SocketStates.Closed:
+                    console.log("Detected socket close");
+                    this._disconnected();
+                    this.destroy();
+                    break;
+            }
+        });
     }
 
     _disconnected(callback)
@@ -432,7 +433,7 @@ class Socket extends stream.Duplex
     free(){
         this.close(() => {
             this._modem._freeSocket(this);
-    });
+        });
     }
 
 
@@ -464,9 +465,9 @@ class Socket extends stream.Duplex
         console.log("_write",chunk.toString());
         this._modem.addCommand("AT#SSENDEXT=" + this._connId + "," + chunk.length, /^\r\n> /).then((m) => {
             this._modem.addCommand(chunk).then(function(){
-            callback(null);
-        }).catch(callback);
-    });
+                callback(null);
+            }).catch(callback);
+        });
     }
 
     _writev(chunks, callback)
@@ -491,16 +492,16 @@ class ModemHttp
     {
         options.createConnection = (config, cb) => {
         // console.log("config", config);
-        this.socket = this._modem.getSocket();
-        this.socket.on('end',() => {
-            this.close();
-    });
-        return this.socket.connect(config,() => {
+            this.socket = this._modem.getSocket();
+            this.socket.on('end',() => {
+                 this.close();
+            });
+            return this.socket.connect(config,() => {
                 if (end){
                     this.request.end();
                 }
             });
-    };
+        };
 
         this.request = http.request(options,callback);
 
