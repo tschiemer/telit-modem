@@ -49,11 +49,11 @@ class TelitModem extends ATCommander.Modem
 
         this._sockets = [];
 
-        this.addNotification('cmsError',/^\r\n\+CMS ERROR:(.+)\r\n/, (matches) => {
+        this.addNotification('cmsError',/^\+CMS ERROR:(.+)\r\n/, (matches) => {
             console.log("Received error: ", matches);
         });
-        this.addNotification('closedSocket', /NO CARRIER\r\n/, (matches) => {
-            console.log("CHECKING CONS");
+        this.addNotification('closedSocket', /^NO CARRIER\r\n/, (matches) => {
+            console.log("CHECKING CONS", this.inbuf, this.inbuf.toString() );
             for(var i in this._sockets){
                 this._sockets[i]._checkConnection();
             }
@@ -70,7 +70,7 @@ class TelitModem extends ATCommander.Modem
         return new Promise((resolve, reject) => {
             promise.then(()=>{
                 // upon open, make sure to disable echo
-                this.run("ATE0",/^((ATE0\r\n)?)\r\nOK\r\n/).then(resolve).catch(reject);
+                this.run("ATE0",/^((ATE0\r\n\r\n)?)OK\r\n/).then(resolve).catch(reject);
             }).catch(reject);
         });
     }
@@ -100,7 +100,7 @@ class TelitModem extends ATCommander.Modem
     getModel()
     {
         return new Promise((resolve, reject) => {
-            this.addCommand("AT+GMM",/^\r\n(.+)\r\n\r\nOK\r\n/).then(function(matches){
+            this.addCommand("AT+GMM",/^(.+)\r\n\r\nOK\r\n/).then(function(matches){
                 resolve(matches[1]);
             }).catch(reject);
         });
@@ -132,7 +132,7 @@ class TelitModem extends ATCommander.Modem
     getNetworkRegistrationState()
     {
         return new Promise((resolve, reject) => {
-            this.addCommand("AT+CREG?", /^\r\n\+CREG: (\d+),(\d+)\r\nOK\r\n/).then((matches) => {
+            this.addCommand("AT+CREG?", /^\+CREG: (\d+),(\d+)\r\nOK\r\n/).then((matches) => {
                 resolve(parseInt(matches[1]), parseInt(matches[2]));
             }).catch(reject);
         });
@@ -140,7 +140,7 @@ class TelitModem extends ATCommander.Modem
 
     subscribeToNetworkRegistrationState(callback)
     {
-        this.addNotification("networkRegistrationState", /^\r\n\+CREG: (\d+)\r\n/, (buf, matches) => {
+        this.addNotification("networkRegistrationState", /^\+CREG: (\d+)\r\n/, (buf, matches) => {
             callback(parseInt(matches[1]));
         });
         this.addCommand("AT+CREG=1");
@@ -163,8 +163,8 @@ class TelitModem extends ATCommander.Modem
         this.addCommand("AT+CNMI=2,2");
 
         //+CMT: <alpha>,<length><CR><LF><pdu>
-        this.addNotification('receivedSMS', /^\r\n\+CMT: "(.*)",(\d+)\r\n(.+)\r\n/, (buf, matches) => {
-            console.log(matches);
+        this.addNotification('receivedSMS', /^\+CMT: "(.*)",(\d+)\r\n(.+)\r\n/, (buf, matches) => {
+            // console.log(matches);
             receiveCallback(PDU.parse(matches[3]),matches[1], matches[2]);
         });
 
@@ -180,7 +180,7 @@ class TelitModem extends ATCommander.Modem
     getServiceCenterAddress()
     {
         return new Promise((resolve, reject) => {
-                this.addCommand("AT+CMGF?", /^\r\n\+CSCA: (.+),(.+)\r\n/).then((buf, matches) => {
+                this.addCommand("AT+CMGF?", /^\+CSCA: (.+),(.+)\r\n/).then((buf, matches) => {
                     resolve(matches[1], matches[2]);
             }).catch(reject);
         });
@@ -198,7 +198,7 @@ class TelitModem extends ATCommander.Modem
             contextId = 1;
         }
         return new Promise((resolve, reject) => {
-            this.addCommand("AT#SGACT=" + contextId + ",1", /\r\n#SGACT: (.+)\r\n\r\nOK\r\n/).then((matches) => {
+            this.addCommand("AT#SGACT=" + contextId + ",1", /#SGACT: (.+)\r\n\r\nOK\r\n/).then((matches) => {
                 this.ip = matches[1];
                 resolve(matches[1]);
             }).catch(reject);
@@ -272,7 +272,7 @@ class Socket extends stream.Duplex
         this._pushPossible = false;
         this._recvBuf = new Buffer(0);
 
-        this._modem.addCommand("AT#SCFG="+this._connId+"")
+        // this._modem.addCommand("AT#SCFG="+this._connId+"")
 
         // AT#SCFGEXT=<connId>,<ringMode>,<recvDataMode>,<keepalive>,[,<ListenAutoRsp>[,<sendDataMode>]]
         // set socket sring format to SRING: <connId>,<datalen>,<data>
@@ -353,12 +353,12 @@ class Socket extends stream.Duplex
         //     }).catch((err) => console.log("error",err));
         // });
          // register receive handler
-        this._modem.addNotification('socketRing-'+this._connId, new RegExp("^\r\nSRING: "+this._connId+",(.+),(.+)\r\n"), (buf,matches) => {
+        this._modem.addNotification('socketRing-'+this._connId, new RegExp("^SRING: "+this._connId+",(.+),(.+)\r\n"), (buf,matches) => {
             this._push(new Buffer(matches[2],"hex"));
         });
 
         // add socket closed notification  NO CARRIER: <connId>,<cause>
-        this._modem.addNotification('socketClose-'+this._connId, new RegExp("^\r\nNO CARRIER: "+this._connId+",(.+)\r\n"), (result) => {
+        this._modem.addNotification('socketClose-'+this._connId, new RegExp("^NO CARRIER: "+this._connId+",(.+)\r\n"), (result) => {
             this._disconnect();
         });
     }
@@ -394,12 +394,12 @@ class Socket extends stream.Duplex
             return;
         }
 
-        console.log("Checking for socket state");
-        this._modem.addCommand("AT#SS=" + this._connId, /^\r\n#SS: (\d+),(\d+)\r\n\r\nOK\r\n/).then((matches) => {
-            console.log("state",matches);
+        // console.log("Checking for socket state");
+        this._modem.addCommand("AT#SS=" + this._connId, /^#SS: (\d+),(\d+)\r\n\r\nOK\r\n/).then((matches) => {
+            // console.log("state",matches);
             switch(parseInt(matches[2])){
                 case exports.SocketStates.Closed:
-                    console.log("Detected socket close");
+                    // console.log("Detected socket close");
                     this._disconnected();
                     this.destroy();
                     break;
@@ -462,8 +462,8 @@ class Socket extends stream.Duplex
 
     _write(chunk, encoding, callback)
     {
-        console.log("_write",chunk.toString());
-        this._modem.addCommand("AT#SSENDEXT=" + this._connId + "," + chunk.length, /^\r\n> /).then((m) => {
+        // console.log("_write",chunk.toString());
+        this._modem.addCommand("AT#SSENDEXT=" + this._connId + "," + chunk.length, /^> /).then(() => {
             this._modem.addCommand(chunk).then(function(){
                 callback(null);
             }).catch(callback);
