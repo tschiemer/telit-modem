@@ -23,6 +23,7 @@
   "dependencies": {
     "at-commander": "latest",
     "promise": "latest",
+    "pdu": "latest",
     "http": "latest",
     "mqtt": "latest"
   }
