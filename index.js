@@ -1,481 +1,669 @@
 "use strict";
 
-var ATCommander = require('at-commander');
+var serialport = require('serialport');
 var Promise = require('promise');
-var PDU = require('pdu');
-var stream = require('stream'),
-    http = require('http'),
-    mqtt = require('mqtt'),
-    url = require('url');
 
-// var Command = ATCommander.Command;
+exports.Modem = Modem;
+exports.Command = Command;
+exports.Notification = Notification;
 
-const PROTOCOL_TCP = 0;
-const PROTOCOL_UDP = 1;
+const CommandStateInit      = 'init';
+const CommandStateRejected  = 'rejected';
+const CommandStateRunning   = 'running';
+const CommandStateFinished  = 'finished';
+const CommandStateTimeout   = 'timeout';
+const CommandStateAborted   = 'aborted';
 
-exports.Protocols = {
-    TCP: PROTOCOL_TCP,
-    UDP: PROTOCOL_UDP
-};
-
-exports.NetworkRegistrationStates = {
-    NotRegisteredNotSearching: 0,
-    RegisteredHome: 1,
-    NotRegisteredButSearching: 2,
-    RegistrationDenied: 3,
-    Unknown: 4,
-    RegisteredRoaming: 5
+exports.CommandStates = {
+    Init        : CommandStateInit,
+    Rejected    : CommandStateRejected,
+    Running     : CommandStateRunning,
+    Finished    : CommandStateFinished,
+    Timeout     : CommandStateTimeout,
+    Aborted     : CommandStateAborted
 };
 
 
-class TelitModem extends ATCommander.Modem
+var NextId = 1;
+
+function getNextId(){
+    return NextId++;
+}
+
+function Modem(config)
 {
-    constructor(options)
-    {
-        super(options);
+    this.serial = false;
 
-        this.ip = false;
+    this.inbuf = new Buffer(0);
 
-        this.addNotification('cmsError',/^\+CMS ERROR:(.+)\r\n/, (matches) => {
-            console.log("Received error: ", matches[1]);
-        });
+    this.events = {};
 
-        this._sockets = [];
+    this.setConfig(config);
 
-        this.startProcessing();
+    this.bufferTimeout = 0;
+    this.processCommands = false;
+    this.currentCommand = false;
+    this.pendingCommands = [];
 
+    this.notifications = {};
+}
+
+function Command(buf, expectedResult, resultCallback, resultProcessor)
+{
+    this.id = getNextId();
+    this.state = CommandStateInit;
+
+    this.buf = buf;
+
+    this.result = false;
+
+    if (typeof expectedResult === 'undefined') {
+        this.expectedResult = 'OK';
+    } else {
+        this.expectedResult = expectedResult;
     }
 
-    open(path)
-    {
-        var promise = super.open(path);
-
-        return new Promise((resolve, reject) => {
-            promise.then(()=>{
-                // upon open, make sure to disable echo
-                this.run("ATE0",/^((ATE0\r\n)?)\r\nOK\r\n/).then(resolve).catch(reject);
-            }).catch(reject);
-        });
-    }
-
-    close(cb)
-    {
-        // shutdown all sockets
-        var l = 0;
-        for (var i in this._sockets){
-            l++;
-            if (l == this._sockets.length){
-                this._sockets[i].close(() => {
-                    super.close(cb);
-            })
-            } else {
-                this._sockets[i].close();
+    if (typeof resultProcessor === 'function') {
+        this.resultProcessor = resultProcessor;
+    } else if (typeof resultProcessor === 'undefined' || resultProcessor === true) {
+        if (typeof this.expectedResult === 'string') {
+            this.resultProcessor = function(buf, result) {
+                if (result instanceof Array){
+                    return result[1] == this.expectedResult;
+                } else {
+                    return result == this.expectedResult;
+                }
+            };
+        } else if (this.expectedResult instanceof RegExp) {
+            this.resultProcessor = function(buf, matches) {
+                return matches;
             }
-
+        } else if (typeof this.expectedResult === 'number') {
+            this.resultProcessor = function(buf, matches) {
+                return buf;
+            }
         }
-
-        super.close(cb);
     }
 
-    /**
-     * Test function to show how to get simple attributes
-     */
-    getModel()
-    {
-        return new Promise((resolve, reject) => {
-            this.addCommand("AT+GMM",/^\r\n(.+)\r\n\r\nOK\r\n/).then(function(matches){
-                resolve(matches[1]);
-            }).catch(reject);
+    if (typeof resultCallback === 'function') {
+        this.resultCallback = resultCallback;
+    }
+}
+
+function Notification(name, regex, handler)
+{
+    this.name = name;
+    this.regex = regex;
+    this.handler = handler;
+}
+
+Notification.prototype._generateId = function()
+{
+    this.id = getNextId();
+};
+
+Modem.prototype.getConfig = function()
+{
+    return this.config;
+};
+
+Modem.prototype.setConfig = function(newConfig){
+
+    if (typeof newConfig === 'string'){
+        newConfig = JSON.parse(config);
+    }
+    if (typeof newConfig !== 'object'){
+        newConfig = {};
+    }
+
+
+    this.config = Object.assign({
+        parser: serialport.parsers.raw,
+        baudRate: 115200,
+        dataBits: 8,
+        stopBits: 1,
+        lineRegex: /^\r\n(.+)\r\n/,
+        EOL: "\r\n",
+        timeout: 5000
+    }, newConfig || {});
+
+
+};
+
+Modem.prototype.open = function(path)
+{
+
+    if (this.serial instanceof serialport.SerialPort && this.serial.isOpen()){
+        this.serial.close();
+    }
+
+
+    this.serial = new serialport.SerialPort(path, {
+        parser: this.config.parser,
+        baudRate: this.config.baudRate,
+        dataBits: this.config.dataBits,
+        stopBits: this.config.stopBits,
+        autoOpen: false
+    });
+
+    this._registerSerialEvents();
+
+    var serial = this.serial;
+    return new Promise(function(resolve, reject){
+        serial.open(function(error){
+            if (error) reject(error);
+            else resolve(serial.isOpen());
         });
+    });
+};
+
+Modem.prototype._registerSerialEvents = function(){
+    var modem = this;
+
+    this.serial.on('open', function(error){
+        if (typeof modem.events.open === 'function'){
+            modem.events.open(error);
+        }
+    });
+    this.serial.on('data', function(data){
+        modem._onData(data);
+
+        if (typeof modem.events.data === 'function'){
+            modem.events.data(error);
+        }
+    });
+    this.serial.on('disconnect', function(error){
+        // console.log('disconnect');
+        if (typeof modem.events.disconnect === 'function'){
+            modem.events.disconnect(error);
+        }
+    });
+    this.serial.on('close', function(error){
+        // console.log('close');
+        if (typeof modem.events.close === 'function'){
+            modem.events.close(error);
+        }
+    });
+    this.serial.on('error', function(error){
+        // console.log('error', error);
+
+        if (typeof modem.events.error === 'function'){
+            modem.events.error(error);
+        }
+    });
+
+    /*
+     var events = ['open','data','close','disconnect','data'];
+     for (var i in events){
+     var e = events[i];
+     this.serial.on(e,function(data){
+     console.log(e, data);
+     var onEvent = '_on' + e.charAt(0).toUpperCase() + e.slice(1);;
+     if (typeof modem[onEvent] === 'function'){
+     modem[onEvent](data);
+     }
+     if (typeof modem.events[e] === 'function'){
+     modem.events[e](data);
+     }
+     });
+     }*/
+};
+
+Modem.prototype.isOpen = function(){
+    if (!this.serial instanceof serialport.SerialPort){
+        return false;
     }
+    return this.serial.isOpen();
+};
 
+Modem.prototype.pause = function(){
+    if (!this.serial instanceof serialport.SerialPort){
+        return false;
+    }
+    this.serial.pause();
+    return this;
+};
 
-    setAPN(APN, type)
-    {
-        // AT+CGDCONT=<cid>,<PDP-type>,APN[,...]
-        var params = ["1"]; //PDP context identifier
-
-        // type in [IP, IPV6, IPV4V6]
-        if (typeof type === 'undefined'){
-            params.push("IP");
-        } else if (["IP","IPV6","IPV4V6"].indexOf(type) != -1){
-            params.push(type);
+Modem.prototype.close = function(cb){
+    if (typeof cb !== 'function') {
+        if (typeof this.events.close === 'function') {
+            cb = this.events.close;
         } else {
-            throw new Error("Invalid PDP-type given, valid only IP, IPV6, IPV4V6");
+            cb = function(){};
+        }
+    }
+
+    if (this.serial instanceof serialport.SerialPort){
+        this.serial.close(cb);
+    } else {
+        cb();
+    }
+    return this;
+};
+
+Modem.prototype.on = function(event, callback)
+{
+    this.events[event] = callback;
+    return this;
+};
+
+Modem.prototype.getInBuffer = function()
+{
+    return this.inbuf;
+};
+
+Modem.prototype.clearInBuffer = function()
+{
+    this.inbuf = new Buffer(0);
+    if (this.bufferTimeout) {
+        clearTimeout(this.bufferTimeout);
+        this.bufferTimeout = 0;
+    }
+    return this;
+};
+
+Modem.prototype.getPendingCommands = function()
+{
+    return this.pendingCommands;
+};
+
+Modem.prototype.clearPendingCommands = function()
+{
+    this.pendingCommands = [];
+    return this;
+};
+
+Modem.prototype.isProcessingCommands = function()
+{
+    return this.processCommands;
+};
+
+Modem.prototype.startProcessing = function()
+{
+    this.processCommands = true;
+    this._checkPendingCommands();
+    return this;
+};
+
+Modem.prototype.stopProcessing = function(abortCurrent, stopCallback)
+{
+    this.processCommands =  false;
+    if (this.currentCommand instanceof Command && abortCurrent){
+        this.abortCurrentCommand();
+    }
+    if (typeof stopCallback === 'function'){
+        // if current command not yet finished, wait until it is done.
+        if (this.currentCommand instanceof Command) {
+            var modem = null;
+            var i = setInterval(function () {
+                if (modem.currentCommand instanceof Command){
+                    return;
+                }
+                clearInterval(i);
+                stopCallback();
+            }, 100);
+        } else {
+            stopCallback();
+        }
+    }
+    return this;
+};
+
+Modem.prototype.getCurrentCommand = function()
+{
+    return this.currentCommand;
+};
+
+Modem.prototype.abortCurrentCommand = function()
+{
+    this.currentCommand = false;
+    this._clearBufferTimeout();
+    this._checkPendingCommands();
+
+    return this;
+};
+
+
+Modem.prototype.getNotifications = function()
+{
+    return this.notifications;
+};
+
+Modem.prototype.addNotification = function(notification, regex, handler)
+{
+    if (notification instanceof Notification){
+        this.notifications[notification.name] = notification;
+    } else {
+        this.notifications[notification] = new Notification(notification, regex, handler);
+    }
+    return this;
+};
+
+Modem.prototype.removeNotification = function(name)
+{
+    delete this.notifications[name];
+    return this;
+};
+
+Modem.prototype.clearNotifications = function()
+{
+    this.notifications = {};
+    return this;
+};
+
+
+
+/**
+ * Run command bypassing command list (processing option)
+ * @param command
+ */
+Modem.prototype.run = function(command, expected, cb, processor)
+{
+    if (!(command instanceof Command)){
+        command = new Command(command, expected, cb, processor);
+    }
+    if (this.currentCommand instanceof Command || this.inbuf.length > 0){
+        command.state = CommandStateRejected;
+    } else {
+        this._run(command);
+    }
+    return _promiseForCommand(command);
+};
+
+/**
+ * Add command to processing list
+ * @param command
+ */
+Modem.prototype.addCommand = function(command, expected, cb, processor)
+{
+    if (!(command instanceof Command)){
+        command = new Command(command, expected, cb, processor);
+    }
+    this.pendingCommands.push(command);
+    this._checkPendingCommands();
+
+    return _promiseForCommand(command);
+};
+
+function _promiseForCommand(command)
+{
+    return new Promise(function(resolve, reject){
+        command._interval = setInterval(function(){
+            if (command.state == CommandStateInit || command.state == CommandStateRunning){
+                //just wait until not running anymore
+                return;
+            }
+            clearInterval(command._interval);
+            // console.log(command);
+            if (command.state == CommandStateFinished){
+                if (command.result.processed) {
+                    resolve(command.result.processed);
+                } else {
+                    resolve(command.result);
+                }
+            } else {
+                reject(command);
+            }
+        },100);
+    });
+}
+
+/**
+ * Read n bytes without writing any command
+ * @param n
+ * @param cb
+ * @returns {*}
+ */
+Modem.prototype.read = function(n, cb)
+{
+    return this.run(new Command(false, n, cb));
+};
+
+/**
+ * Write str/buffer to serial without awaiting any result
+ * @param str
+ * @param cb
+ * @returns {*}
+ */
+Modem.prototype.write = function(buf, cb)
+{
+    return this.run(new Command(buf, 0, cb));
+}
+
+
+
+Modem.prototype._checkPendingCommands = function()
+{
+    // let current command finish
+    if (this.currentCommand instanceof Command){
+        return;
+    }
+    // if not processing just do nothing
+    if (!this.processCommands){
+        return;
+    }
+    // if no pending commands, we're done
+    if (this.pendingCommands.length == 0){
+        return;
+    }
+
+    // require there not to be anything left in the buffer, before starting another command
+    if (this.inbuf.length > 0){
+        this._setBufferTimeout();
+        return;
+    }
+
+    var command = this.pendingCommands[0];
+    this.pendingCommands = this.pendingCommands.slice(1);
+
+    this._run(command);
+};
+
+Modem.prototype._run = function(command)
+{
+    this.currentCommand = command;
+    command.state = CommandStateRunning;
+
+    if (typeof command.buf === 'string'){
+        // console.log("Serial.write",new Buffer(command.buf), command.buf);
+        this.serial.write(command.buf + this.config.EOL);
+    } else if (command.buf instanceof Buffer){
+        // console.log("Serial.write", command.buf);
+        this.serial.write(command.buf);
+    }
+
+    this._setBufferTimeout();
+
+    //command._writeTo(this, this.config.EOL);
+
+    // var str = command.str + this.config.EOL;
+    // this.serial.write(str);
+
+    // wait until command has been completely written to serial
+    // this.serial.drain();
+};
+
+
+Modem.prototype._onData = function(data){
+    // update buffer
+    // console.log("before!", this.inbuf);
+
+    this.inbuf = Buffer.concat([this.inbuf, data]);
+
+    // console.log("after!", this.inbuf, this.inbuf.toString());
+
+    // this.clear
+
+    // if a command was previously sent, we are expecting a result
+    if (this.currentCommand instanceof Command){
+
+        var finishCommand = false;
+        var consumeBufBytes = 0;
+        var matches = null;
+
+        if (typeof this.currentCommand.expectedResult === 'string') {
+            var str = this.inbuf.toString();
+            matches = str.match(this.config.lineRegex);
+            if (matches) {
+                consumeBufBytes = matches[0].length;
+                finishCommand = true;
+            }
+        } else if (this.currentCommand.expectedResult instanceof RegExp){
+            var str = this.inbuf.toString();
+            matches = str.match(this.currentCommand.expectedResult);
+            // console.log("matches?",str, matches, this.currentCommand.expectedResult.source);
+            if (matches){
+                finishCommand = true;
+                consumeBufBytes = matches[0].length;
+                // always assume
+                // matches = matches[1];
+            }
+        } else if (typeof this.currentCommand.expectedResult === 'number') {
+            console.log('is type number');
+            if (this.currentCommand.expectedResult <= this.inbuf.length) {
+                finishCommand = true;
+                consumeBufBytes = this.currentCommand.expectedResult;
+            }
+        } else if (typeof this.currentCommand.expectedResult === 'function'){
+            consumeBufBytes = this.currentCommand.expectedResult(this.inbuf);
+            if (0 < consumeBufBytes){
+                finishCommand = true;
+            }
+        } else {
+            throw new Error('Invalid expectedResult for command');
         }
 
-        if (typeof APN === 'undefined'){
-            throw new Error("APN not given");
+
+        var consumedBuf;
+        if (0 < consumeBufBytes) {
+            consumedBuf = this.inbuf.slice(0, consumeBufBytes);
+            this.inbuf = this.inbuf.slice(consumeBufBytes);
+            // console.log("consumed ",consumeBufBytes,"remaining",this.inbuf);
         }
-        params.push(APN);
-
-        return this.addCommand("AT#CGDCONT=",params.join(","));
-    }
-
-    getNetworkRegistrationState()
-    {
-        return new Promise((resolve, reject) => {
-            this.addCommand("AT+CREG?", /^\r\n\+CREG: (\d+),(\d+)\r\nOK\r\n/).then((matches) => {
-                resolve(parseInt(matches[1]), parseInt(matches[2]));
-            }).catch(reject);
-        });
-    }
-
-    subscribeToNetworkRegistrationState(callback)
-    {
-        this.addNotification("networkRegistrationState", /^\r\n\+CREG: (\d+)\r\n/, (buf, matches) => {
-            callback(parseInt(matches[1]));
-        });
-        this.addCommand("AT+CREG=1");
-    }
-
-    unsubscribeFromNetworkRegistrationState()
-    {
-        this.addCommand("AT+CREG=0").then((success) => {
-            this.removeNotification("networkRegistrationState");
-        });
-    }
-
-    enableSMS(receiveCallback)
-    {
-        // AT+CMGF=<mode> (0: PDU, 1: text)
-        this.addCommand("AT+CMGF=0");
-
-        //AT+CNMI=[<mode>[,<mt>[,<bm>[,<ds> [,<bfr>]]]]]
-        // flush sms directly to modem
-        this.addCommand("AT+CNMI=2,2");
-
-        //+CMT: <alpha>,<length><CR><LF><pdu>
-        this.addNotification('receivedSMS', /^\r\n\+CMT: "(.*)",(\d+)\r\n(.+)\r\n/, (buf, matches) => {
-            console.log(matches);
-            receiveCallback(PDU.parse(matches[3]),matches[1], matches[2]);
-        });
-
-        console.log("enableSMS");
-    }
-
-    disableSMS()
-    {
-        this.removeNotification('receivedSMS');
-    }
-
-
-    getServiceCenterAddress()
-    {
-        return new Promise((resolve, reject) => {
-                this.addCommand("AT+CMGF?", /^\r\n\+CSCA: (.+),(.+)\r\n/).then((buf, matches) => {
-                    resolve(matches[1], matches[2]);
-            }).catch(reject);
-        });
-    }
-
-    setServiceCenterAddress(number, type)
-    {
-        var str = "AT+CMGF=" + number + (typeof type === 'undefined' ? '' : ',' + type);
-        return this.addcommand(str);
-    }
-
-    enablePDP(contextId)
-    {
-        if (typeof contextId === 'undefined'){
-            contextId = 1;
+        if (finishCommand){
+            // get copy of relevant buffer contents
+            // pass relevant in buffer to result handler
+            this._serveCommand(this.currentCommand, CommandStateFinished, consumedBuf, matches);
+            // this._setBufferTimeout();
+            // this.currentCommand.resultCallback(buf, matches);
         }
-        return new Promise((resolve, reject) => {
-            this.addCommand("AT#SGACT=" + contextId + ",1", /\r\n#SGACT: (.+)\r\n\r\nOK\r\n/).then((matches) => {
-                this.ip = matches[1];
-                resolve(matches[1]);
-            }).catch(reject);
-        });
     }
+    // if (!(this.currentCommand instanceof Command))
+    { // if no command was sent, we're likely dealing with an unsolicited notification
+        var str = this.inbuf.toString();
+        var line = str.match(this.config.lineRegex);
+        if (line){
+            // cons¿ole.log("matched a line");
+            for (var i in this.notifications){
+                var matches = str.match(this.notifications[i].regex);
+                // console.log("testing ",str," against ", this.notifications[i].regex);
+                if (matches !== null){
+                    // copy matching buffer
 
-    disablePDP(contextId)
-    {
-        if (typeof contextId === 'undefined'){
-            contextId = 1;
-        }
-        return this.addCommand("AT#SGACT="+contextId+",0");
-    }
+                    var buf = this.inbuf.slice(0, matches[0].length);
 
-    getSocket(connId, options)
-    {
-        if (typeof connId === 'undefined' || typeof this._sockets[connId] === 'undefined') {
-            // get first unused socket
-            if (typeof connId === 'undefined') {
-                for (var i = 1; i <= 6; i++) {
-                    if (typeof this._sockets[i] === 'undefined') {
-                        connId = i;
-                        break;
-                    }
+                    // console.log("STRIPPING ",buf, buf.toString());
+
+                    // update inbuf consuming matching buffer
+                    this.inbuf = this.inbuf.slice(matches[0].length);
+
+                    this._serveNotification(this.notifications[i], buf, matches);
                 }
             }
-            this._sockets[connId] = new Socket(this, connId, options);
+
+            // this._serveNotification(false, new Buffer(), line);
+
+            // feed notification to generic notification handler
+            // if (typeof this.events.notification === 'function'){
+            //     this.events.notification(buf);
+            // }
         }
-        return this._sockets[connId];
+
+        // this._setBufferTimeout();
     }
+    this._setBufferTimeout();
+};
 
-    http()
-    {
-        return new ModemHttp(this);
-    }
-
-    mqtt(config)
-    {
-        return new mqtt.Client(() => {
-            return this.getSocket().connect(config);
-        }, config);
-    }
-
-    _freeSocket(socket)
-    {
-        delete this._sockets[socket._connId];
-    }
-
-}
-
-// class ExtCommand extends ATCommander.Command
-// {
-//     constructor(cmd, expected, resultHandler, processor)
-//     {
-//
-//     }
-// }
-
-class Socket extends stream.Duplex
+Modem.prototype._setBufferTimeout = function()
 {
-    constructor(modem, connId, options)
-    {
-        super(options);
+    this._clearBufferTimeout();
 
-        this._modem = modem;
-        this._connId = connId;
-
-        // this.writable = false;
-        this._connected = false;
-
-        this._pushPossible = false;
-        this._recvBuf = new Buffer(0);
-
-
-        // AT#SCFGEXT=<connId>,<ringMode>,<recvDataMode>,<keepalive>,[,<ListenAutoRsp>[,<sendDataMode>]]
-        // set socket sring format to SRING: <connId>,<datalen>,<data>
-        // receive in hex mode
-        // keepalive deactivated
-        this._modem.addCommand("AT#SCFGEXT="+this._connId+",2,1,0");
-
-        // AT#SCFGEXT2=<connId>,<bufferStart>,[,<abortConnAttempt>[,<unused_B >[,<unused_C >[,<noCarrierMode>]]]]
-        // buffer timeout reset on new data received
-        // enable connection abortion during Socket creation.
-        // ARG, this is not supported in the current firmware version...
-        // enable verbose socket close messages NO CARRIER: <connId>,<cause>
-        this._modem.addCommand("AT#SCFGEXT2="+this._connId+",1,1");//,0,0,2");
-
-        // AT#SCFGEXT2=<connId>,<immRsp>[....]
-        // make AT#SD (open socket) command blocking
-        // ARG! this command isn't even supported for the moment being
-        // this._modem.addCommand("AT#SCFGEXT3="+this._connId+",0");
-
-    }
-
-    isConnected()
-    {
-        return this._connected;
-    }
-
-    connect(options, connectListener)
-    {
-        if (this._connected){
-            throw new Error("Already connected");
-        }
-
-        this._registerListeners();
-
-        // required
-        this.port = options.port;
-        this.host = options.host;
-
-        this.protocol = options.transportProtocol || PROTOCOL_TCP;
-
-        this.localPort = options.localPort || Math.ceil(65535 * Math.random());
-
-        var closureMode = 0; // let server close connection
-        var conMode = 1;     // command mode connection
-
-        var cmd = "AT#SD=" + this._connId + "," + this.protocol + "," + this.port + "," + this.host + "," + closureMode + "," + this.port + "," + conMode;
-        var command = new ATCommander.Command(cmd, "OK");
-
-        if (typeof connectListener !== 'function'){
-            connectListener = function(){};
-        }
-
-
-        this._modem.addCommand(command).then((result) => {
-            if (result){
-                // this.writable = true;
-                this._connected = true;
-                connectListener();
-            } else {
-                connectListener(command);
-            }
-        }).catch(connectListener);
-
-        return this;
-    }
-
-    _registerListeners()
-    {
-
-        // // register receive handler
-        // this._modem.addNotification('socketRing-'+this._connId, new RegExp("^\r\nSRING: "+this._connId+",(.+)\r\n"), (buf,matches) => {
-        //
-        //     // console.log("SRING => got " + matches[1] + " bytes");
-        //     //#SRECV: <sourceIP>,<sourcePort><connId>,<recData>,<dataLeft>
-        //     this._modem.addCommand("AT#SRECV="+this._connId+","+matches[1], new RegExp("^\r\n#SRECV: "+this._connId+",(\\d+)\r\n(.+)\r\n\r\nOK\r\n")).then((result) => {
-        //     // console.log("srecv");
-        //         this._push(new Buffer(result[2],"hex"));
-        //     }).catch((err) => console.log("error",err));
-        // });
-         // register receive handler
-        this._modem.addNotification('socketRing-'+this._connId, new RegExp("^\r\nSRING: "+this._connId+",(.+),(.+)\r\n"), (buf,matches) => {
-            this._push(new Buffer(matches[2],"hex"));
-        });
-
-        // add socket closed notification  NO CARRIER: <connId>,<cause>
-        this._modem.addNotification('socketClose-'+this._connId, new RegExp("^\r\nNO CARRIER: "+this._connId+",(.+)\r\n"), (result) => {
-            this._disconnect();
-        });
-    }
-
-    _unregisterListeners()
-    {
-        this._modem.removeNotification('socketRing-'+this._connId);
-        this._modem.removeNotification('socketClose-'+this._connId);
-
-    }
-
-    close(disconnectListener)
-    {
-
-        if (typeof disconnectListener !== 'function'){
-            disconnectListener = function(){};
-        }
-
-        if (!this._connected){
-            disconnectListener();
-            //throw new Error("Already disconnected");
-        }
-
-        this._modem.addCommand("AT#SH=" + this._connId, "OK", disconnectListener).then((result) => {
-            this._disconnect(disconnectListener);
-        }).catch(disconnectListener);
-    }
-
-    _disconnect(callback)
-    {
-        this._connected = false;
-        this._unregisterListeners();
-
-        if (typeof cb === 'function'){
-            callback();
-        }
-    }
-
-    destroySoon()
-    {
-        this.writable = false;
-        // console.log()
-        // this.endWritable(this,)
-        // this.close();
-        // return true;
-    }
-    destroy()
-    {
-        this.close();
-    }
-
-    free(){
-        this.close(() => {
-            this._modem._freeSocket(this);
-        });
-    }
-
-
-    _push(recvBuf)
-    {
-        if (this._pushPossible) {
-            this._pushPossible = this.push(recvBuf);
+    var modem = this;
+    this.bufferTimeout = setTimeout(function(){
+        // console.log("timeout", modem.inbuf);
+        if (modem.currentCommand instanceof Command){
+            var command = modem.currentCommand;
+            command.result = {
+                buf: modem.inbuf
+            };
+            modem.inbuf = new Buffer(0);
+            modem.currentCommand = false;
+            command.state = CommandStateTimeout;
         } else {
-            this._recvBuf = Buffer.concat([this._recvBuf]);
+            if (typeof modem.events.discarding === 'function'){
+                modem.events.discarding(modem.inbuf);
+            }
+            modem.inbuf = new Buffer(0);
+            modem._checkPendingCommands();
         }
-    }
+    }, this.config.timeout);
+};
 
-    _read(size)
-    {
-        this._pushPossible = true;
-
-        if (this._recvBuf.length) {
-            var buf = this._readBuf;
-            this._recvBuf = new Buffer(0);
-
-            // console.log("pushing data", buf);
-
-            this._pushPossible = this.push(buf);
-        }
-    }
-
-    _write(chunk, encoding, callback)
-    {
-        console.log("_write",chunk.toString());
-        this._modem.addCommand("AT#SSENDEXT=" + this._connId + "," + chunk.length, /^\r\n> /).then((m) => {
-            this._modem.addCommand(chunk).then(function(){
-                callback(null);
-            }).catch(callback);
-        });
-    }
-
-    _writev(chunks, callback)
-    {
-        for(var i in chunks){
-            this._write(chunks[i], callback);
-        }
-    }
-
-}
-
-class ModemHttp
+Modem.prototype._clearBufferTimeout = function()
 {
+    if (this.bufferTimeout){
+        clearTimeout(this.bufferTimeout);
+        this.bufferTimeout = 0;
+    }
+};
 
-    constructor(modem)
-    {
-        // console.log("constructed ModemHttp");
-        this._modem = modem;
+Modem.prototype._serveCommand = function(command, state, buf, matches)
+{
+    // clear current command
+    this.currentCommand = false;
+
+    // set command result
+    // command._setResult(buf, matches);
+    command.result = {
+        buf: buf,
+        matches: matches
+    };
+    if (typeof command.resultProcessor === 'function'){
+        command.result.processed = command.resultProcessor(buf, matches);
     }
 
-    request(options, callback, end)
-    {
-        options.createConnection = (config, cb) => {
-        // console.log("config", config);
-        this.socket = this._modem.getSocket();
-            return this.socket.connect(config,() => {
-                if (end){
-                    this.request.end();
-                }
-            });
-        };
+    // by setting the state to a final state, the promise will finish by itself
+    command.state = state;
 
-        this.request = http.request(options,callback);
-
-        return this.request;
+    // if a result handler has been set specifically, call it
+    if (typeof command.resultCallback === 'function'){
+        command.resultCallback(command.result.processed);
     }
 
-    get(options, callback)
-    {
-        if (typeof options === 'string'){
-            options = url.parse(options);
+    // feed command to generic command result handler
+    if (typeof this.events.command === 'function'){
+        this.events.command(command, command.result.processed);
+    }
+
+    // console.log("buffer now ", this.inbuf);
+    this._checkPendingCommands();
+};
+
+Modem.prototype._serveNotification = function(notification, buf, matches)
+{
+    if (notification instanceof Notification) {
+        // feed matches to notification handler (if set)
+        if (typeof notification.handler === 'function') {
+            notification.handler(buf, matches);
         }
-
-        return this.request(options, callback, true);
+        // feed notification to specific event handler
+        if (typeof this.events[notification.name] === 'function') {
+            this.events[notification.name](buf, matches);
+        }
+    } else {
+        // feed notification to generic notification handler
+        if (typeof this.events.notification === 'function') {
+            this.events.notification(matches);
+        }
     }
-}
-
-exports.TelitModem = TelitModem;
-
+};
