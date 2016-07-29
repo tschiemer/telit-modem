@@ -209,6 +209,27 @@ class TelitModem extends ATCommander.Modem
         this._ipByContext[contextId] = ip;
     }
 
+    deinitializeNetworking(timeout)
+    {
+        if (typeof timeout === 'undefined'){
+            timeout = 2000;
+        }
+
+        // close all sockets
+        this.addCommand("AT#SH=1");
+        this.addCommand("AT#SH=2");
+        this.addCommand("AT#SH=3");
+        this.addCommand("AT#SH=4");
+        this.addCommand("AT#SH=5");
+        this.addCommand("AT#SH=6");
+
+        return new Promise((resolve, reject) => {
+            this.disablePDP().then(function(){
+                setTimeout(resolve,timeout);
+            });
+        });
+    }
+
     enablePDP(contextId)
     {
         if (typeof contextId === 'undefined'){
@@ -290,6 +311,7 @@ class TelitModem extends ATCommander.Modem
         }
         return this._sockets[options.connId];
     }
+
 
     http()
     {
@@ -599,4 +621,5 @@ class ModemHttp
 }
 
 exports.TelitModem = TelitModem;
+exports.Socket = Socket;
 
