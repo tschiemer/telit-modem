@@ -45,7 +45,8 @@ class TelitModem extends ATCommander.Modem
     {
         super(options);
 
-        this.ip = false;
+        // ip per context
+        this._ipByContext = [];
 
         this._sockets = [];
 
@@ -192,14 +193,38 @@ class TelitModem extends ATCommander.Modem
         return this.addcommand(str);
     }
 
+    getIP(contextId)
+    {
+        if (typeof contextId === 'undefined'){
+            contextId = 1;
+        }
+        if (typeof this._ipByContext[contextId] === 'string'){
+            return this._ipByContext[contextId];
+        }
+        return false;
+    }
+
+    _setIP(contextId, ip)
+    {
+        this._ipByContext[contextId] = ip;
+    }
+
     enablePDP(contextId)
     {
         if (typeof contextId === 'undefined'){
             contextId = 1;
         }
+
+        // if already connected with this context
+        if (this.getIP(contextId)){
+            return new Promise((resolve, reject) => {
+                resolve(this.getIP(contextId));
+            });
+        }
+
         return new Promise((resolve, reject) => {
-            this.addCommand("AT#SGACT=" + contextId + ",1", /#SGACT: (.+)\r\n\r\nOK\r\n/, {timeout: 5000}).then((matches) => {
-                this.ip = matches[1];
+            this.addCommand("AT#SGACT=" + contextId + ",1", /^#SGACT: (.+)\r\n\r\nOK\r\n/, {timeout: 5000}).then((matches) => {
+                this._setIP(contextId, matches[1]);
                 resolve(matches[1]);
             }).catch(reject);
         });
@@ -210,10 +235,39 @@ class TelitModem extends ATCommander.Modem
         if (typeof contextId === 'undefined'){
             contextId = 1;
         }
-        return this.addCommand("AT#SGACT="+contextId+",0");
+        return new Promise((resolve, reject) => {
+             this.addCommand("AT#SGACT=" + contextId + ",0").then((success) => {
+                 this._setIP(contextId, false);
+                 resolve(success);
+             }).catch(reject);
+        });
     }
 
-    getSocket(connId, options)
+    /**
+     *
+     * @param connId            socket connection identifier (1-6)
+     * @param contextId         PDP context identifier (default 1, 1-5)
+     * @param packetSize        packet size to be used by the TCP/UDP/IP stack for data sending (default 300, 1-1500)
+     * @param exchangeTimeout   exchange timeout [sec] (or socket inactivity timeout); if there’s no data exchange within this timeout period the connection is closed.(default 90, 0: no timeout)
+     * @param connectTimeout    connection timeout [1/10 sec]; if we can’t establish a connection to the remote within this timeout period, an error is raised. (default 600)
+     * @param sendTimeout       data sending timeout; after this period data are sent also if they’re less than max packet size (default 50, 0: no timeout)
+     * @returns {*}
+     */
+    configureSocket(connId, opts)
+    {
+        opts = Object.assign({
+            contextId: 1,
+            packetSize: 300,
+            exchangeTimeout: 90,
+            connectTimeout: 600,
+            sendTimeout: 50
+        }, opts);
+
+        // AT#SCFG=<connId>,<cid>,<pktSz>,<maxTo>,<connTo>,<txTo>
+        return this.addCommand("AT#SCFG=" + connId + "," + opts.contextId + "," + opts.packetSize + "," + opts.exchangeTimeout + "," + opts.connectTimeout + "," + opts.sendTimeout);
+    }
+
+    getSocket(connId, contextId, options)
     {
         if (typeof connId === 'undefined' || typeof this._sockets[connId] === 'undefined') {
             // get first unused socket
@@ -225,7 +279,10 @@ class TelitModem extends ATCommander.Modem
                     }
                 }
             }
-            this._sockets[connId] = new Socket(this, connId, options);
+            if (typeof contextId === 'undefined'){
+                contextId = 1;
+            }
+            this._sockets[connId] = new Socket(this, connId, contextId, options);
         }
         return this._sockets[connId];
     }
@@ -259,12 +316,13 @@ class TelitModem extends ATCommander.Modem
 
 class Socket extends stream.Duplex
 {
-    constructor(modem, connId, options)
+    constructor(modem, connId, contextId, options)
     {
         super(options);
 
         this._modem = modem;
         this._connId = connId;
+        this._contextId = contextId;
 
         // this.writable = false;
         this._connected = false;
@@ -272,6 +330,11 @@ class Socket extends stream.Duplex
 
         this._pushPossible = false;
         this._recvBuf = new Buffer(0);
+
+        // (re)set  socket options on creation (as we don't know what has happened so far)
+        options = options || {};
+        options.contextId = this._contextId;
+        this.configure(options);
 
         // this._modem.addCommand("AT#SCFG="+this._connId+"")
 
@@ -285,7 +348,7 @@ class Socket extends stream.Duplex
         // buffer timeout reset on new data received
         // enable connection abortion during Socket creation.
         // ARG, this is not supported in the current firmware version...
-        // enable verbose socket close messages NO CARRIER: <connId>,<cause>
+        // [[enable verbose socket close messages NO CARRIER: <connId>,<cause>]]
         this._modem.addCommand("AT#SCFGEXT2="+this._connId+",1,1");//,0,0,2");
 
         // AT#SCFGEXT2=<connId>,<immRsp>[....]
@@ -293,6 +356,11 @@ class Socket extends stream.Duplex
         // ARG! this command isn't even supported for the moment being
         // this._modem.addCommand("AT#SCFGEXT3="+this._connId+",0");
 
+    }
+
+    configure(opts)
+    {
+        this._modem.configureSocket(this._connId, opts);
     }
 
     isConnected()
