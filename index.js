@@ -267,24 +267,28 @@ class TelitModem extends ATCommander.Modem
         return this.addCommand("AT#SCFG=" + connId + "," + opts.contextId + "," + opts.packetSize + "," + opts.exchangeTimeout + "," + opts.connectTimeout + "," + opts.sendTimeout);
     }
 
-    getSocket(connId, contextId, options)
+    getSocket(options)
     {
-        if (typeof connId === 'undefined' || typeof this._sockets[connId] === 'undefined') {
+        options = Object.assign({
+            contextId: 1
+        }, options);
+
+        if (typeof options.connId === 'undefined' || typeof this._sockets[options.connId] === 'undefined') {
             // get first unused socket
-            if (typeof connId === 'undefined') {
+            if (typeof options.connId === 'undefined') {
                 for (var i = 1; i <= 6; i++) {
                     if (typeof this._sockets[i] === 'undefined') {
-                        connId = i;
+                        options.connId = i;
                         break;
                     }
                 }
             }
             if (typeof contextId === 'undefined'){
-                contextId = 1;
+                options.contextId = 1;
             }
-            this._sockets[connId] = new Socket(this, connId, contextId, options);
+            this._sockets[options.connId] = new Socket(this, options.connId, options.contextId, options);
         }
-        return this._sockets[connId];
+        return this._sockets[options.connId];
     }
 
     http()
@@ -295,7 +299,9 @@ class TelitModem extends ATCommander.Modem
     mqtt(config)
     {
         return new mqtt.Client(() => {
-            return this.getSocket().connect(config);
+            return this.getSocket({
+                exchangeTimeout: 0 // disable generic socket timeout (close on no exchange)
+            }).connect(config);
         }, config);
     }
 
