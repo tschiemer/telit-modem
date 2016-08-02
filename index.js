@@ -127,7 +127,7 @@ class TelitModem extends ATCommander.Modem
         }
         params.push(APN);
 
-        return this.addCommand("AT#CGDCONT=" + params.join(","));
+        return this.addCommand("AT+CGDCONT=" + params.join(","));
     }
 
     getNetworkRegistrationState()
