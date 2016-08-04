@@ -1,6 +1,6 @@
 {
   "name": "telit-modem",
-  "version": "1.0.0-beta.0",
+  "version": "1.0.0-beta.1",
   "description": "Telit Modem interface for serial ports (with focus on HE910-D and similiar series)",
   "main": "index.js",
   "scripts": {
@@ -12,7 +12,13 @@
   },
   "keywords": [
     "telit",
-    "modem"
+    "modem",
+    "at command",
+    "at",
+    "command",
+    "attention",
+    "serial",
+    "port"
   ],
   "author": "Philip Tschiemer",
   "license": "ISC",

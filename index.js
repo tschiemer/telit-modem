@@ -108,16 +108,19 @@ class TelitModem extends ATCommander.Modem
     }
 
 
-    setAPN(APN, type)
+    setAPN(APN, pdpType)
     {
-        // AT+CGDCONT=<cid>,<PDP-type>,APN[,...]
-        var params = ["1"]; //PDP context identifier
+        // AT+CGDCONT=[<cid>[,<PDP_type> [,<APN> [,<PDP_addr> [,<d_comp> [,<h_comp> [,<pd1> [,…[,pdN]]]]]]]]]
+        var contextId = 1,
+            pdpAddr = '""',
+            dataCompression = 1,
+            headerCompression = 1;
 
         // type in [IP, IPV6, IPV4V6]
-        if (typeof type === 'undefined'){
-            params.push("IP");
-        } else if (["IP","IPV6","IPV4V6"].indexOf(type) != -1){
-            params.push(type);
+        if (typeof pdpType === 'undefined'){
+            pdpType = "IP";
+        } else if (["IP","IPV6","IPV4V6"].indexOf(pdpType) != -1){
+            // do nothing
         } else {
             throw new Error("Invalid PDP-type given, valid only IP, IPV6, IPV4V6");
         }
@@ -125,9 +128,17 @@ class TelitModem extends ATCommander.Modem
         if (typeof APN === 'undefined'){
             throw new Error("APN not given");
         }
-        params.push(APN);
 
-        return this.addCommand("AT+CGDCONT=" + params.join(","));
+        return this.addCommand("AT+CGDCONT=" + contextId + "," + pdpType + "," + APN + "," + pdpAddr + "," + dataCompression + "," + headerCompression);
+    }
+
+    getQoS(contextId)
+    {
+        if (typeof contextId === 'undefined'){
+            contextId = 1;
+        }
+        //AT+CGEQNEG=[<cid> [,<cid>]*]
+        return this.addCommand("AT+CGEQNEG=" + contextId);
     }
 
     getNetworkRegistrationState()
